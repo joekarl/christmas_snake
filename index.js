@@ -2,13 +2,13 @@
 
 const vertexShaderSrc = `
 attribute vec3 aVertexPosition;
-attribute vec3 aVertexColor;
 uniform mat4 uTransform;
+uniform vec3 uColor;
 varying vec3 vColor;
 
 void main() {
     gl_Position = uTransform * vec4(aVertexPosition, 1.0);
-    vColor = aVertexColor;
+    vColor = uColor;
 }
 `;
 
@@ -41,16 +41,54 @@ function init() {
         colorPoly: createProgram(
             gameState.gl,
             [gameState.shaders.vertex, gameState.shaders.fragment],
-            ["aVertexPosition", "aVertexColor"],
-            ["uTransform"]
+            ["aVertexPosition"],
+            ["uTransform", "uColor"]
         )
     };
 
     gameState.buffers = {
-        rectBuffer: createBuffer(gameState.gl, gameState.gl.ARRAY_BUFFER)
+        rectBuffer: createBuffer(gameState.gl, gameState.gl.ARRAY_BUFFER, new Float32Array([
+          -1,  1,  0.0,
+          -1, -1,  0.0,
+           1, -1,  0.0,
+           1, -1,  0.0,
+          -1,  1,  0.0,
+           1,  1,  0.0,
+        ]))
     };
 
-    gameState.worldTransform = new mat4();
+    gameState.colors = {
+      green: vec3.fromValues(0.0, 1.0, 0.0),
+      red: vec3.fromValues(1, 0, 0)
+    };
+
+    gameState.worldTransform = mat4.create();
+    // in reverse order because matrixes
+    mat4.translate(
+      gameState.worldTransform,
+      gameState.worldTransform,
+      vec3.fromValues(-1, -1, 0)
+    );
+    mat4.scale(
+      gameState.worldTransform,
+      gameState.worldTransform,
+      vec3.fromValues(2 / 800, 2 / 600, 1)
+    );
+
+    gameState.boxes = [
+      createBox(
+        vec3.fromValues(10, 10, 1),
+        gameState.colors.red,
+        300,
+        200
+      ),
+      createBox(
+        vec3.fromValues(10, 10, 1),
+        gameState.colors.green,
+        700,
+        400
+      )
+    ];
 
     runLoop([update, render].map(fn => fn.bind(null, gameState)));
 }
@@ -64,20 +102,38 @@ function runLoop(fns) {
 }
 
 function update(gameState) {
-    const { gl, buffers } = gameState;
-    const { rectBuffer } = buffers;
-    updateBuffer(gl, rectBuffer, new Float32Array([
-         0.0,  0.5,  0.0,  1.0,  0.0,  0.0,
-        -0.5, -0.5,  0.0,  0.0,  1.0,  0.0,
-         0.0, -1.0,  0.0,  1.0,  1.0,  1.0,
-         0.0, -1.0,  0.0,  1.0,  1.0,  1.0,
-         0.5, -0.5,  0.0,  0.0,  0.0,  1.0,
-         0.0,  0.5,  0.0,  1.0,  0.0,  0.0,
-    ]));
+    const { boxes } = gameState;
+
+    boxes.forEach((b) => {
+      if (b.left) {
+        b.interpolator -= 0.01;
+        if (b.interpolator < 0) {
+          b.interpolator = 0;
+          b.left = false;
+        }
+      } else {
+        b.interpolator += 0.01;
+        if (b.interpolator > 1) {
+          b.interpolator = 1;
+          b.left = true;
+        }
+      }
+      mat4.identity(b.transform);
+      mat4.translate(
+        b.transform,
+        b.transform,
+        vec3.fromValues(800 * b.interpolator, b.y, 0)
+      );
+      mat4.scale(
+        b.transform,
+        b.transform,
+        b.size
+      );
+    });
 }
 
 function render(gameState) {
-    const { gl, buffers, programs } = gameState;
+    const { gl, buffers, programs, boxes } = gameState;
     const { rectBuffer } = buffers;
     const { colorPoly } = programs;
 
@@ -87,15 +143,32 @@ function render(gameState) {
 
     gl.clearColor(0.0, 0.0, 0.0, 1.0);
 
-    gl.viewport(0, 0, gameState.canvas.width, gameState.canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    gl.bindBuffer(rectBuffer.type, rectBuffer);
-    gl.vertexAttribPointer(colorPoly.attributes["aVertexPosition"], 3, gl.FLOAT, false, 24, 0);
-    gl.vertexAttribPointer(colorPoly.attributes["aVertexColor"], 3, gl.FLOAT, false, 24, 12);
-    gl.uniformMatrix4fv(colorPoly.uniforms["uTransform"], false, );
+    boxes.forEach(({transform, color}) => {
+      gl.bindBuffer(rectBuffer.type, rectBuffer);
+      gl.vertexAttribPointer(colorPoly.attributes["aVertexPosition"], 3, gl.FLOAT, false, 12, 0);
 
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
+      const finalTransform = mat4.create();
+      mat4.multiply(finalTransform, gameState.worldTransform, transform);
+
+      gl.uniformMatrix4fv(colorPoly.uniforms["uTransform"], false, finalTransform);
+      gl.uniform3fv(colorPoly.uniforms["uColor"], color);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    });
+}
+
+function createBox(size, color, x, y) {
+  return {
+    size,
+    color,
+    x,
+    y,
+    interpolator : x / 800,
+    left : true,
+    transform : mat4.create()
+  }
 }
 
 // <editor-fold WebGl Boilerplate>
@@ -105,10 +178,13 @@ function updateBuffer(gl, buffer, data) {
     gl.bufferData(buffer.type, data, gl.STATIC_DRAW);
 }
 
-function createBuffer(gl, type) {
+function createBuffer(gl, type, data) {
     const buffer = gl.createBuffer();
     gl.bindBuffer(type, buffer);
     buffer.type = type;
+    if (data) {
+      gl.bufferData(buffer.type, data, gl.STATIC_DRAW);
+    }
     return buffer;
 }
 
